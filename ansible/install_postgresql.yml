@@ -1,0 +1,105 @@
+---
+- name: Full setup of PostgreSQL with required dependencies on CentOS 9
+  hosts: 
+    - power
+    - vmweb 
+  become: yes
+  vars_files:
+    - postgres_vars.yml
+  vars:
+    ansible_python_interpreter: /usr/bin/python3  # Especificar el intérprete de Python
+
+  tasks:
+    - name: Update all packages on the system
+      ansible.builtin.yum:
+        name: "*"
+        state: latest
+        update_cache: yes
+
+    - name: Install EPEL manually for CentOS Stream 9
+      ansible.builtin.command:
+        cmd: "dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm"
+
+    - name: Install required packages for PostgreSQL and utilities
+      ansible.builtin.yum:
+        name:
+          - wget
+          - unzip
+          - sudo
+          - vim
+          - python3-psycopg2  # Instalar la biblioteca psycopg2
+        state: present
+
+
+    - name: Install PostgreSQL server
+      ansible.builtin.yum:
+        name: 
+          - postgresql-server
+          - postgresql-contrib
+        state: present
+
+    - name: Initialize PostgreSQL database
+      ansible.builtin.command: "/usr/bin/postgresql-setup initdb"
+      args:
+        creates: /var/lib/pgsql/data/PG_VERSION
+
+    - name: Ensure PostgreSQL is running and enabled on boot
+      ansible.builtin.service:
+        name: "postgresql"
+        state: started
+        enabled: yes
+    - name: Set password for PostgreSQL 'postgres' user
+      ansible.builtin.shell: |
+        sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD '{{ postgres_password }}';"
+      register: password_change_result
+      #      changed_when: password_change_result.rc == 0
+
+    - name: Configure PostgreSQL to listen on all interfaces
+      ansible.builtin.lineinfile:
+        path: "/var/lib/pgsql/data/postgresql.conf"
+        regexp: "^#listen_addresses = 'localhost'"
+        line: "listen_addresses = '*'"
+        state: present
+    - name: Remove line allowing local connections from pg_hba.conf
+      ansible.builtin.lineinfile:
+        path: "/var/lib/pgsql/data/pg_hba.conf"
+        regexp: "^host    all             all             127.0.0.1/32            ident"
+        state: absent
+
+    - name: Allow remote connections to PostgreSQL
+      ansible.builtin.lineinfile:
+        path: "/var/lib/pgsql/data/pg_hba.conf"
+        insertafter: EOF
+        line: "host    all             all             0.0.0.0/0               md5"
+        state: present
+
+    - name: Restart PostgreSQL to apply configuration changes
+      ansible.builtin.service:
+        name: "postgresql"
+        state: restarted
+
+    - name: Create a new PostgreSQL database if it does not exist
+      ansible.builtin.shell: |
+        sudo -u postgres psql -c "CREATE DATABASE dvdrental;"
+      register: create_db_result
+      changed_when: create_db_result.rc == 0
+
+    - name: Download dvdrental database file
+      ansible.builtin.get_url:
+        url: https://www.postgresqltutorial.com/wp-content/uploads/2019/05/dvdrental.zip
+        dest: /tmp/dvdrental.zip
+
+    - name: Unzip dvdrental file
+      ansible.builtin.command:
+        cmd: "unzip -o /tmp/dvdrental.zip -d /tmp"
+      args:
+        creates: /tmp/dvdrental.tar
+
+
+    - name: Load dvdrental data into PostgreSQL
+      ansible.builtin.command:
+        cmd: "pg_restore -U postgres -d dvdrental /tmp/dvdrental.tar"
+      environment:
+        PGPASSWORD: "{{ postgres_password }}"
+      become_user: postgres
+

@@ -1,0 +1,89 @@
+---
+- name: Full setup for web application using Docker on CentOS 9
+  hosts: vmweb
+  become: yes
+
+  vars_files:
+    - postgres_vars.yml
+
+  tasks:
+    - name: Update all packages
+      ansible.builtin.yum:
+        name: "*"
+        state: latest
+        update_cache: yes
+
+    - name: Install required packages
+      ansible.builtin.yum:
+        name:
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+          - git
+          - wget
+          - unzip  # Agregado para manejar archivos comprimidos si es necesario
+        state: present
+
+    - name: Add Docker repository
+      ansible.builtin.command:
+        cmd: "yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo"
+      args:
+        creates: /etc/yum.repos.d/docker-ce.repo
+
+    - name: Install Docker
+      ansible.builtin.yum:
+        name: docker-ce
+        state: present
+
+    - name: Start Docker service
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Clone the GitHub repository
+      ansible.builtin.git:
+        repo: https://github.com/machina13/postgresql-ppc64le
+        dest: /opt/postgresql-ppc64le
+        update: yes
+
+    - name: Create .env file with PostgreSQL environment variables
+      ansible.builtin.copy:
+        dest: /opt/postgresql-ppc64le/.env
+        content: |
+          DB_NAME={{ db_name }}
+          DB_USER={{ db_user }}
+          DB_PASSWORD={{ db_password }}
+          DB_HOST={{ db_host }}
+          DB_PORT={{ db_port }}
+
+    - name: Build Docker image from the repository
+      ansible.builtin.command:
+        cmd: "docker build -t postgresql-ppc64le ."
+      args:
+        chdir: /opt/postgresql-ppc64le
+
+    - name: Ensure the web container is running
+      ansible.builtin.docker_container:
+        name: web
+        image: postgresql-ppc64le
+        state: started
+        restart_policy: always
+        ports:
+          - "80:5000"
+        env_file: /opt/postgresql-ppc64le/.env
+
+    - name: Wait for the web service to become available
+      ansible.builtin.wait_for:
+        port: 80
+        host: "{{ ansible_host }}"  # Asegúrate de que ansible_host esté definido con la IP pública
+        state: started
+        timeout: 60  # Tiempo de espera en segundos
+        delay: 5  # Tiempo de espera antes de comenzar a verificar
+        msg: "El servicio web no está disponible en el puerto 80."
+
+    - name: Confirm the container is running
+      ansible.builtin.docker_container:
+        name: web
+        state: started
+

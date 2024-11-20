@@ -1,0 +1,59 @@
+---
+- name: Retrieve IP addresses of specific interfaces and update /etc/hosts on vmweb
+  hosts: power:vmweb
+  become: yes
+  tasks:
+    - name: Retrieve IP address of eth1 on power
+      ansible.builtin.shell: "ip -4 addr show eth1 | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}'"
+      register: power_eth1_ip
+      when: inventory_hostname == 'power'
+
+    - name: Retrieve IP address of eth0 on vmweb
+      ansible.builtin.shell: "ip -4 addr show eth0 | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}'"
+      register: vmweb_eth0_ip
+      when: inventory_hostname == 'vmweb'
+
+- name: Update /etc/hosts on vmweb with IP addresses
+  hosts: vmweb
+  become: yes
+  tasks:
+    - name: Set up host entries for /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{ item }}"
+        create: yes
+        state: present
+      loop:
+        - "{{ hostvars['power'].power_eth1_ip.stdout }} power"
+        - "{{ hostvars['vmweb'].vmweb_eth0_ip.stdout }} x86"
+      when: "'power_eth1_ip' in hostvars['power'] and 'vmweb_eth0_ip' in hostvars['vmweb']"
+
+    - name: Display IP address of eth1 on power
+      ansible.builtin.debug:
+        msg: "IP address of eth1 on power: {{ hostvars['power'].power_eth1_ip.stdout }}"
+
+    - name: Display IP address of eth0 on vmweb
+      ansible.builtin.debug:
+        msg: "IP address of eth0 on vmweb: {{ hostvars['vmweb'].vmweb_eth0_ip.stdout }}"
+
+- name: Configure static route on power server
+  hosts: power
+  become: yes
+  tasks:
+    - name: Add static route to eth1 on power using community.general.nmcli
+      community.general.nmcli:
+        conn_name: "System eth1"
+        state: present
+        type: ethernet
+        ifname: eth1
+        ip4: 10.240.0.0/24
+        gw4: 10.168.1.1
+- name: Reiniciar el servicio de red para aplicar los cambios en el servidor power
+  hosts: power
+  become: yes
+  tasks:
+    - name: Reiniciar NetworkManager
+      ansible.builtin.service:
+        name: NetworkManager
+        state: restarted
+
